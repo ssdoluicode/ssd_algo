@@ -1,0 +1,74 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-10-27 14:16:44.775542",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "account_name",
+  "broker",
+  "client_id",
+  "api_key",
+  "remark"
+ ],
+ "fields": [
+  {
+   "fieldname": "account_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Account Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "broker",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Broker",
+   "options": "\nZerodha\nAngel One\nGroww\n5 Paisa",
+   "reqd": 1
+  },
+  {
+   "fieldname": "client_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Client ID",
+   "reqd": 1
+  },
+  {
+   "fieldname": "api_key",
+   "fieldtype": "Data",
+   "label": "API Key"
+  },
+  {
+   "fieldname": "remark",
+   "fieldtype": "Small Text",
+   "label": "Remark"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-10-27 14:19:51.644412",
+ "modified_by": "Administrator",
+ "module": "My Custom",
+ "name": "Demat Account",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

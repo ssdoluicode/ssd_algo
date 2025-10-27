@@ -1,0 +1,423 @@
+import logging
+import datetime as dt
+import time
+import pandas as pd
+import urllib
+import json
+from SmartApi.smartConnect import SmartConnect
+import pyotp
+from SmartApi.smartExceptions import SmartAPIException
+
+class AngelOneSmartAPI:
+    def __init__(self, api_key, client_id, password, totp):
+        self.api_key = api_key
+        self.client_id = client_id
+        self.password = password
+        self.totp = pyotp.TOTP(totp).now()
+        self.smart_api = None
+        self.session = None
+        self.connect()
+        self.symbolToken_dict()
+
+    def connect(self):
+        try:
+            self.smart_api = SmartConnect(api_key=self.api_key)
+            self.session = self.smart_api.generateSession(self.client_id, self.password, self.totp)
+            self.refresh_token = self.session['data']['refreshToken']
+            self.feed_token = self.smart_api.getfeedToken()
+            self.user_profile = self.smart_api.getProfile(self.refresh_token)
+            logging.info("Successfully connected to Angel One SmartAPI")
+        except SmartAPIException as e:
+            logging.error(f"Failed to connect: {e}")
+
+    def symbolToken_dict(self):
+        """
+        self.to_symbol & self.to_token are dict
+        """
+        instrument_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        response = urllib.request.urlopen(instrument_url)
+        instrument_list = json.loads(response.read())
+        self.to_symbol={}
+        self.to_token= {}
+        for i in instrument_list:
+            # if ((i["symbol"].split("-")[-1]=="EQ") & (i["exch_seg"]=="NSE")):
+            if (i["exch_seg"]=="NSE"):
+                self.to_symbol[i["token"]]= i["name"]
+                self.to_token[i["name"]]= i["token"]
+
+
+    def get_fund(self):
+        try:
+            fund = self.smart_api.rmsLimit()
+            return fund["data"]
+        except SmartAPIException as e:
+            logging.error(f"Failed to get fund details: {e}")
+            return None
+
+    def get_ltp(self, symbol):
+        try:
+            exchange="NSE"
+            symboltoken= self.to_token[symbol]
+            data = self.smart_api.ltpData(exchange, symbol, symboltoken)
+            return data["data"]["ltp"]
+        except SmartAPIException as e:
+            logging.error(f"Failed to get market data: {e}")
+            return None
+         
+
+    def get_ohlc(self, symbol, duration, interval):
+        st_date = dt.date.today() - dt.timedelta(duration)
+        end_date = dt.datetime.now()
+        st_date = dt.datetime(st_date.year, st_date.month, st_date.day, 9, 15)
+        end_date = end_date.strftime('%Y-%m-%d %H:%M')
+
+        params = {
+        "exchange": "NSE",
+        "symboltoken": self.to_token[symbol],
+        "interval": interval,
+        "fromdate": (st_date).strftime('%Y-%m-%d %H:%M'),
+        "todate": end_date 
+         }
+        try:
+            ohlc_data = self.smart_api.getCandleData(params)
+            ohlc_df = pd.DataFrame(ohlc_data['data'], columns=['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            ohlc_df['Datetime'] = pd.to_datetime(ohlc_df['Datetime'])
+            return ohlc_df
+
+        except SmartAPIException as e:
+            logging.error(f"Failed to place order: {e}")
+            return None
+        
+
+    def extend_ohlc(self, symbol, data):
+        interval_dict= {
+            60:"ONE_MINUTE", 180:"THREE_MINUTE", 300:"FIVE_MINUTE", 600:"TEN_MINUTE", 900:"FIFTEEN_MINUTE",
+            1800:"THIRTY_MINUTE", 3600:"ONE_HOUR", 86400:"ONE_DAY"
+        }
+        interval_key= int((data.iloc[-1,0]-data.iloc[-2,0]).total_seconds())
+        data= data.iloc[:-1,:]
+        st_date = data.iloc[-1,0]
+        end_date = dt.datetime.now()
+        st_date = dt.datetime(st_date.year, st_date.month, st_date.day, st_date.hour, st_date.minute)
+     
+
+        params = {
+        "exchange": "NSE",
+        "symboltoken": self.to_token[symbol],
+        "interval": interval_dict[interval_key],
+        "fromdate": (st_date).strftime('%Y-%m-%d %H:%M'),
+        "todate": end_date.strftime('%Y-%m-%d %H:%M')
+         }
+        try:
+            ohlc_data = self.smart_api.getCandleData(params)
+            ohlc_df = pd.DataFrame(ohlc_data['data'], columns=['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            ohlc_df['Datetime'] = pd.to_datetime(ohlc_df['Datetime'])
+            ohlc_df= pd.concat([data.iloc[:-1,:], ohlc_df])
+            return ohlc_df
+
+        except SmartAPIException as e:
+            logging.error(f"Failed to place order: {e}")
+            return None
+        
+# ########################################## Order #######################################################
+    def place_order(self,symbol,  quantity, variety="NORMAL", transactiontype= "BUY", ordertype="MARKET",
+                     producttype= "MIS"):
+        try:
+            order_params = {
+                "variety": variety,
+                "tradingsymbol": f"{symbol}-EQ",
+                "symboltoken": self.to_token[symbol],
+                "transactiontype": transactiontype,
+                "exchange": "NSE",
+                "ordertype": ordertype,
+                "producttype": producttype,
+                "duration": "DAY",
+                "price": "",
+                "quantity": quantity
+            }
+            order_id = self.smart_api.placeOrder(order_params)
+            logging.info(f"Order placed successfully, Order ID: {order_id}")
+            return order_id
+        except SmartAPIException as e:
+            logging.error(f"Failed to place order: {e}")
+            return None
+        
+
+    def place_limit_order(self,symbol,buy_sell, price,quantity):
+        params = {
+                    "variety":"NORMAL",
+                    "tradingsymbol":f"{symbol}-EQ",
+                    "symboltoken":self.to_token[symbol],
+                    "transactiontype":buy_sell,
+                    "exchange":"NSE",
+                    "ordertype":"LIMIT",
+                    "producttype":"INTRADAY",
+                    "duration":"DAY",
+                    "price":price,
+                    "quantity":quantity
+                    }
+        response = self.smart_api.placeOrder(params)
+        return response
+    
+    def place_market_order(self,symbol,buy_sell,quantity):
+        params = {
+                    "variety":"NORMAL",
+                    "tradingsymbol":f"{symbol}-EQ",
+                    "symboltoken":self.to_token[symbol],
+                    "transactiontype":buy_sell,
+                    "exchange":"NSE",
+                    "ordertype":"MARKET",
+                    "producttype":"INTRADAY",
+                    "duration":"DAY",
+                    "quantity":quantity
+                    }
+        response = self.smart_api.placeOrder(params)
+        return response
+    
+    def place_limit_robo_order(self,symbol,buy_sell,price,quantity):
+        ltp = self.get_ltp(symbol)["ltp"]
+        params = {
+                    "variety":"ROBO",
+                    "tradingsymbol":f"{symbol}-EQ",
+                    "symboltoken":self.to_token[symbol],
+                    "transactiontype":buy_sell,
+                    "exchange":"NSE",
+                    "ordertype":"LIMIT",
+                    "producttype":"BO",
+                    "duration":"DAY",
+                    "price":price,
+                    "stoploss": round(ltp*0.1,1),
+                    "squareoff": round(ltp*0.2,1),                
+                    "quantity":quantity
+                    }
+        response = self.smart_api.placeOrder(params)
+        return response
+    
+    def place_market_robo_order(self,symbol,buy_sell,quantity):            
+        ltp = self.get_ltp(symbol)["ltp"]
+        params = {
+                    "variety":"ROBO",
+                    "tradingsymbol":f"{symbol}-EQ",
+                    "symboltoken":self.to_token[symbol],
+                    "transactiontype":buy_sell,
+                    "exchange":"NSE",
+                    "ordertype":"LIMIT",
+                    "producttype":"BO",
+                    "duration":"DAY",
+                    "price":round(ltp,1),
+                    "stoploss": round(ltp*0.1,1),
+                    "squareoff": round(ltp*0.2,1),                
+                    "quantity":quantity
+                    }
+        response = self.smart_api.placeOrder(params)
+        return response
+    
+    def get_order_byid(self, order_id):
+        try:
+            order_details = self.smart_api.orderBook()
+            for order in order_details['data']:
+                if order['orderid'] == order_id:
+                    return order
+            return None
+        except Exception as e:
+            logging.error(f'Error fetching order details: {e}')
+            print(f'Error fetching order details: {e}')
+            return None
+    
+
+    def modify_order_market(self, order_id):
+        try:
+            # Fetch the current order details
+            order = self.get_order_byid(order_id)
+            if order is None:
+                print("Order not found")
+                return
+
+            # Prepare the modification request with the new price
+            modify_order_params = {
+                "orderid": order_id,
+                "variety": order['variety'],
+                "tradingsymbol": order['tradingsymbol'],
+                "symboltoken": order['symboltoken'],
+                "exchange": order['exchange'],
+                "transactiontype": order['transactiontype'],
+                "ordertype": "MARKET",
+                "producttype": order['producttype'],
+                "duration": order['duration'],
+                "quantity": order['quantity'],
+            }
+
+            # Modify the order
+            response = self.smart_api.modifyOrder(modify_order_params)
+            logging.info(f'Order modified: {response}')
+            print(f'Order modified: {response}')
+
+        except Exception as e:
+            logging.error(f'Error modifying order: {e}')
+            print(f'Error modifying order: {e}')
+
+    
+
+
+
+    def modify_order_limit(self, order_id, new_price):
+        try:
+            # Fetch the current order details
+            order = self.get_order_byid(order_id)
+            if order is None:
+                print("Order not found")
+                return
+
+            # Prepare the modification request with the new price
+            modify_order_params = {
+                "orderid": order_id,
+                "variety": order['variety'],
+                "tradingsymbol": order['tradingsymbol'],
+                "symboltoken": order['symboltoken'],
+                "exchange": order['exchange'],
+                "transactiontype": order['transactiontype'],
+                "ordertype": order['ordertype'],
+                "producttype": order['producttype'],
+                "duration": order['duration'],
+                "price": new_price,
+                "quantity": order['quantity'],
+            }
+
+            # Modify the order
+            response = self.smart_api.modifyOrder(modify_order_params)
+            logging.info(f'Order modified: {response}')
+            print(f'Order modified: {response}')
+
+        except Exception as e:
+            logging.error(f'Error modifying order: {e}')
+            print(f'Error modifying order: {e}')
+
+
+    def get_tradebook(self):
+        try:
+            Trades = self.smart_api.tradeBook()['data']
+            Full_Trade_Book = []
+            Full_Trade_Book.append(Trades)
+            return Full_Trade_Book
+        
+        except SmartAPIException as e:
+            logging.error(f"Failed to get order status: {e}")
+            return None
+
+    def get_intraday_open_order(self):
+        try:
+            data_list=[]
+            status = self.smart_api.orderBook()
+            if(status["data"]):
+                for i in status["data"]:
+                    if((i["status"]== "open") & (i["producttype"]=="INTRADAY")):
+                        data_list.append(i)
+                return data_list
+            else:
+                print("No Open Order Found")
+                return None
+
+        except SmartAPIException as e:
+            logging.error(f"Failed to get order status: {e}")
+            return None
+        
+
+    def cancel_order(self, order_id):
+        try:
+            params = {
+                "variety": "NORMAL",
+                "orderid": order_id
+            }
+            response = self.smart_api.cancelOrder(params["orderid"], params["variety"])
+            return response
+        except SmartAPIException as e:
+            logging.error(f"Failed to get positions: {e}")
+            return None
+    
+
+    def cancel_order_all(self):
+        try:
+            open_orders = self.get_intraday_open_order()
+            order_ids = open_orders["orderid"].values
+            for eachOrder in order_ids:
+                    self.cancel_order(eachOrder)
+            print("Pending Orders Cancelled")
+
+        except SmartAPIException as e:
+            logging.error(f"Failed to get positions: {e}")
+            return None
+
+
+    def get_positions(self):
+        try:
+            positions = self.smart_api.position()
+            return positions["data"]
+        except SmartAPIException as e:
+            logging.error(f"Failed to get positions: {e}")
+            return None
+
+    def get_holdings(self):
+        try:
+            holdings = self.smart_api.holding()
+            return holdings
+        except SmartAPIException as e:
+            logging.error(f"Failed to get holdings: {e}")
+            return None
+
+    def logout(self):
+        try:
+            self.smart_api.terminateSession(self.client_id)
+            logging.info("Successfully logged out from Angel One SmartAPI")
+        except SmartAPIException as e:
+            logging.error(f"Failed to logout: {e}")
+
+# Example usage
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    api_key = "your_api_key"
+    client_id = "your_client_id"
+    password = "your_password"
+    totp = "your_totp"
+
+    api = AngelOneSmartAPI(api_key, client_id, password, totp)
+
+    # Get fund details
+    fund_details = api.get_fund()
+    logging.info(f"Fund Details: {fund_details}")
+
+    # Get market data
+    market_data = api.get_market_data(symbol="RELIANCE", exchange="NSE")
+    logging.info(f"Market Data: {market_data}")
+
+    # Place an order
+    order_id = api.place_order(
+        variety="NORMAL",
+        tradingsymbol="RELIANCE",
+        symboltoken="2885",
+        transactiontype="BUY",
+        exchange="NSE",
+        ordertype="LIMIT",
+        producttype="INTRADAY",
+        duration="DAY",
+        price=2000,
+        squareoff=0,
+        stoploss=0,
+        quantity=1
+    )
+    logging.info(f"Order ID: {order_id}")
+
+    # Get order status
+    order_status = api.get_order_status(order_id)
+    logging.info(f"Order Status: {order_status}")
+
+    # Get positions
+    positions = api.get_positions()
+    logging.info(f"Positions: {positions}")
+
+    # Get holdings
+    holdings = api.get_holdings()
+    logging.info(f"Holdings: {holdings}")
+
+    # Logout
+    api.logout()
